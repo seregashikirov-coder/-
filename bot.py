@@ -15,8 +15,10 @@ DB_FILE = 'database.json'
 
 def load_data():
     if os.path.exists(DB_FILE):
-        with open(DB_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except: return {}
     return {}
 
 def save_data(data):
@@ -25,7 +27,7 @@ def save_data(data):
 
 players = load_data()
 
-# Список всех обменов
+# Твоя огромная цепочка обмена
 EXCHANGES = [
     ('🍋', 20, '🍈', 1), ('🍈', 10, '🍐', 2), ('🍐', 50, '🥑', 10),
     ('🥑', 200, '🥔', 1), ('🥔', 50, '🍊', 2), ('🍊', 100, '🥕', 5),
@@ -46,68 +48,70 @@ EXCHANGES = [
     ('⭐️', 50, '🔮', 1), ('🔮', 100, '🧸', 1)
 ]
 
-def check_exchanges(user_id):
-    inv = players[user_id]['inventory']
-    made_changes = False
-    for item_from, count_from, item_to, count_to in EXCHANGES:
-        while inv.get(item_from, 0) >= count_from:
-            inv[item_from] -= count_from
-            inv[item_to] = inv.get(item_to, 0) + count_to
-            made_changes = True
-    return made_changes
+def run_exchanges(uid):
+    inv = players[uid]['inventory']
+    for f_item, f_count, t_item, t_count in EXCHANGES:
+        while inv.get(f_item, 0) >= f_count:
+            inv[f_item] -= f_count
+            inv[t_item] = inv.get(t_item, 0) + t_count
 
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
+async def cmd_start(message: types.Message):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎲 Бросить кубик")
     kb.button(text="🎒 Инвентарь")
     kb.button(text="🏆 ТОП")
     await message.answer("привет это игоушка по кубикам!", reply_markup=kb.as_markup(resize_keyboard=True))
 
+# РЕАКЦИЯ НА КНОПКУ
 @dp.message(F.text == "🎲 Бросить кубик")
-async def roll_dice(message: types.Message):
-    user_id = str(message.from_user.id)
-    if user_id not in players:
-        players[user_id] = {"username": message.from_user.username or "Игрок", "rolls": 0, "inventory": {}}
+async def press_button(message: types.Message):
+    # Бот сам кидает кубик (тот самый анимированный стикер)
+    msg = await message.answer_dice(emoji="🎲")
+    await handle_dice_logic(message, msg.dice.value, delay=3.5)
+
+# РЕАКЦИЯ НА ТВОЙ КУБИК (ЕСЛИ КИНУЛ САМ)
+@dp.message(F.dice)
+async def manual_dice(message: types.Message):
+    if message.dice.emoji == "🎲":
+        await handle_dice_logic(message, message.dice.value, delay=1.5)
+
+async def handle_dice_logic(message, value, delay):
+    uid = str(message.from_user.id)
+    if uid not in players:
+        players[uid] = {"username": message.from_user.username or message.from_user.first_name, "rolls": 0, "inventory": {}}
     
-    players[user_id]['rolls'] += 1
-    dice_msg = await message.answer_dice(emoji="🎲")
-    value = dice_msg.dice.value
-    
-    await asyncio.sleep(3) # Ждем анимацию кубика
+    players[uid]['rolls'] += 1
+    await asyncio.sleep(delay) # Ждем пока докрутится кубик
 
     if value >= 5:
-        # Начисляем 5 лимонов ТОЛЬКО при 5 или 6
-        players[user_id]['inventory']['🍋'] = players[user_id]['inventory'].get('🍋', 0) + 5
-        # Проверяем обмены
-        check_exchanges(user_id)
-        save_data(players)
+        players[uid]['inventory']['🍋'] = players[uid]['inventory'].get('🍋', 0) + 5
+        run_exchanges(uid)
         await message.answer(f"голос ветра начислено 5🍋")
     else:
-        save_data(players)
-        await message.answer(f"Выпало {value}. Ничего не начислено, попробуй еще раз!")
+        await message.answer(f"Выпало {value}. Ничего не дали!")
+    save_data(players)
 
 @dp.message(F.text == "🎒 Инвентарь")
-async def show_inventory(message: types.Message):
-    user_id = str(message.from_user.id)
-    if user_id not in players or not players[user_id]['inventory']:
-        return await message.answer("Твой инвентарь пока пуст!")
-    
-    text = "🎒 Твой инвентарь:\n"
-    items = [f"{k}: {v}" for k, v in players[user_id]['inventory'].items() if v > 0]
-    await message.answer(text + "\n".join(items))
+async def show_inv(message: types.Message):
+    uid = str(message.from_user.id)
+    if uid not in players or not players[uid]['inventory']:
+        return await message.answer("Пусто!")
+    items = [f"{k}: {v}" for k, v in players[uid]['inventory'].items() if v > 0]
+    await message.answer("🎒 Твой инвентарь:\n" + "\n".join(items))
 
 @dp.message(F.text == "🏆 ТОП")
 async def show_top(message: types.Message):
-    sorted_players = sorted(players.items(), key=lambda x: x[1]['rolls'], reverse=True)[:3]
-    top_text = "🏆 ТОП ИГРОКОВ:\n"
-    for i, (uid, data) in enumerate(sorted_players, 1):
-        inv_str = ", ".join([f"{k}:{v}" for k, v in data['inventory'].items() if v > 0][:3]) # покажем первые 3 предмета
-        top_text += f"{i}. @{data['username']} | Бросков: {data['rolls']} | Инв: {inv_str or 'пусто'}\n"
-    await message.answer(top_text)
+    top = sorted(players.values(), key=lambda x: x['rolls'], reverse=True)[:3]
+    text = "🏆 ТОП-3 ИГРОКОВ:\n\n"
+    for i, p in enumerate(top, 1):
+        inv = "".join([k for k, v in p['inventory'].items() if v > 0][-5:])
+        text += f"{i}. {p['username']}\nБросков: {p['rolls']}\nИнв: {inv or '🍋'}\n\n"
+    await message.answer(text)
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
